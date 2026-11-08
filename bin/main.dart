@@ -56,7 +56,7 @@ Future<void> runApi() async {
   final stats = Stats();
   // Подключаемся к Redis
   final redis = await RedisConnection().connect('localhost', 6379);
-  final cache = AvailabilityCache(RedisKeyValueStore(redis));
+  final cache = await AvailabilityCache.create(RedisKeyValueStore(redis));
   
 
   

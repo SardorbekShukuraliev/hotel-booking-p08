@@ -2,6 +2,7 @@
 /// It lives outside the four modules and uses only their public contracts. bin/main.dart decides
 /// which store the endpoints use, through the unit of work.
 library;
+
 import 'api_cache.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -51,7 +52,6 @@ Response toHttp(BookingResult result) {
 }
 
 Handler createApi(List<Room> rooms, UnitOfWork unitOfWork, Stats stats, AvailabilityCache cache) {
-
   final router = Router();
   router.get('/openapi.yaml', (Request request) {
     return Response.ok(File('docs/openapi.yaml').readAsStringSync(),
@@ -65,7 +65,7 @@ Handler createApi(List<Room> rooms, UnitOfWork unitOfWork, Stats stats, Availabi
     });
   });
 
-    router.get('/rooms/availability', (Request request) async {
+  router.get('/rooms/availability', (Request request) async {
     final internalTimer = Stopwatch()..start();
     final query = request.url.queryParameters;
     final checkIn = parseDate(query['checkIn']);
@@ -78,14 +78,13 @@ Handler createApi(List<Room> rooms, UnitOfWork unitOfWork, Stats stats, Availabi
     if (!RegExp(r'^[0-9]{1,3}$').hasMatch(limitText) || limit < 1 || limit > 100) {
       return problem(400, 'InvalidRequest', 'limit must be a whole number from 1 to 100.');
     }
-    
 
     stats.searches++;
     // Cache-aside: сначала смотрим в Redis
-    final key = await cache.key(query['checkIn']!, query['checkOut']!);
+    final key = cache.key(query['checkIn']!, query['checkOut']!);
     final cached = await cache.get(key);
     final List<Room> free;
-    
+
     if (cached != null) {
       stats.cacheHits++;
       final numbers = cached.split(',');
@@ -105,7 +104,6 @@ Handler createApi(List<Room> rooms, UnitOfWork unitOfWork, Stats stats, Availabi
     stats.internalCount++;
     // print('⏱️ Внутреннее время сервера: ${internalTimer.elapsedMicroseconds / 1000} мс');
 
-  
     return json(200, {
       'checkIn': query['checkIn'],
       'checkOut': query['checkOut'],
@@ -137,12 +135,20 @@ Handler createApi(List<Room> rooms, UnitOfWork unitOfWork, Stats stats, Availabi
     final guest = Guest(body['guestName'] as String, body['guestEmail'] as String);
     final result =
         await unitOfWork((service) => service.reserve(guest, room, DateRange(checkIn, checkOut)));
+
+    if (result.outcome == 'Accepted') {
+      await cache.invalidate();
+    }
+
     return toHttp(result);
   });
 
   router.delete('/reservations/<id>', (Request request, String id) async {
     final cancelled = await unitOfWork((service) => service.cancel(id));
     if (!cancelled) return problem(404, 'NotFound', 'There is no confirmed reservation $id.');
+
+    await cache.invalidate(); // <--- ДОБАВИТЬ ЭТО
+
     return Response(204);
   });
 
@@ -155,7 +161,7 @@ class Stats {
   int databaseQueries = 0;
   int cacheHits = 0;
   int cacheMisses = 0;
-  
+
   // Новые поля для замера
   double totalInternalTime = 0.0;
   int internalCount = 0;
@@ -166,7 +172,7 @@ class Stats {
         'cacheHits': cacheHits,
         'cacheMisses': cacheMisses,
       };
-      
+
   // Метод для получения среднего внутреннего времени
   double get avgInternalTime => internalCount == 0 ? 0.0 : totalInternalTime / internalCount;
 }
